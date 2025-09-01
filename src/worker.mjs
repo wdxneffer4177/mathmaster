@@ -19,20 +19,6 @@ export default {
       };
       const { pathname } = new URL(request.url);
       switch (true) {
-
-
-
-
-
-          
-
-
-
-        
-        
-        
-        
-        
         case pathname.endsWith("/chat/completions"):
           assert(request.method === "POST");
           return handleCompletions(await request.json(), apiKey)
@@ -701,16 +687,3 @@ function toOpenAiStreamFlush (controller) {
     controller.enqueue("data: [DONE]" + delimiter);
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
