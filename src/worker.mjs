@@ -28,18 +28,6 @@ export default {
 
 
 
-          case pathname.endsWith("/models"):
-          assert(request.method === "GET");
-          return handleModels(apiKey)
-            .catch(errHandler);
-        
-        // --- 新增代码块开始 ---
-        case pathname.endsWith("/audio/speech"):
-          assert(request.method === "POST");
-          return handleAudioSpeech(await request.json(), apiKey)
-            .catch(errHandler);
-        // --- 新增代码块结束 ---
-        
         
         
         
@@ -726,65 +714,3 @@ function toOpenAiStreamFlush (controller) {
 
 
 
-// --- 新增代码块开始 ---
-
-/**
- * 处理 OpenAI 格式的音频生成请求，并将其转发给 Google Cloud Text-to-Speech API.
- * @param {object} req - 从客户端收到的 OpenAI 格式的请求体.
- * @param {string} apiKey - 你的 Google Cloud API 密钥.
- */
-async function handleAudioSpeech(req, apiKey) {
-  // Google Cloud Text-to-Speech API 的端点
-  const GOOGLE_TTS_URL = `https://texttospeech.googleapis.com/v1/text:synthesize`;
-
-  // 1. 将 OpenAI 请求体转换为 Google TTS API 的格式
-  //    这里我们做一个简单的映射，你可以根据需要扩展更多 voice 选项
-  const googleTtsBody = {
-    input: { text: req.input },
-    voice: {
-      // OpenAI 的 "alloy" 声音映射到 Google 的一个高质量 Wavenet 声音
-      // 你可以根据 OpenAI 的 voice 名称添加更多映射关系
-      languageCode: 'en-US',
-      name: 'en-US-Wavenet-D' 
-    },
-    audioConfig: {
-      // OpenAI 默认是 mp3, Google TTS API 也支持
-      audioEncoding: 'MP3'
-    }
-  };
-
-  // 2. 发送请求到 Google Cloud TTS API
-  const response = await fetch(GOOGLE_TTS_URL, {
-    method: "POST",
-    headers: {
-      // Google TTS API 使用 x-goog-api-key 作为认证头
-      "x-goog-api-key": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(googleTtsBody),
-  });
-
-  // 3. 处理响应
-  if (!response.ok) {
-    // 如果 Google API 返回错误，将其内容直接转发给客户端，方便调试
-    const errorBody = await response.text();
-    console.error("Google TTS API Error:", errorBody);
-    throw new HttpError(`Google TTS API request failed: ${errorBody}`, response.status);
-  }
-
-  // 4. 将 Google 返回的音频数据回传
-  // Google TTS API 的成功响应是一个 JSON，其中 audioContent 字段是 Base64 编码的音频数据
-  const responseData = await response.json();
-  
-  // 将 Base64 数据解码成二进制的音频文件
-  const audioBuffer = Buffer.from(responseData.audioContent, 'base64');
-
-  // 创建一个新的 Response 对象，设置正确的音频文件类型头，并返回
-  const headers = new Headers();
-  headers.set("Content-Type", "audio/mpeg");
-  headers.set("Access-Control-Allow-Origin", "*");
-
-  return new Response(audioBuffer, { headers });
-}
-
-// --- 新增代码块结束 ---
