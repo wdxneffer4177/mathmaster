@@ -696,64 +696,76 @@ function toOpenAiStreamFlush (controller) {
   }
 }
 
-// --- 新增代码块开始 ---
+// --- 从这里开始复制 ---
 
-/**
- * 处理 OpenAI 格式的音频生成请求，并将其转发给 Google Cloud Text-to-Speech API.
- * @param {object} req - 从客户端收到的 OpenAI 格式的请求体.
- * @param {string} apiKey - 你的 Google Cloud API 密钥.
- */
-async function handleAudioSpeech(req, apiKey) {
-  // Google Cloud Text-to-Speech API 的端点
-  const GOOGLE_TTS_URL = `https://texttospeech.googleapis.com/v1/text:synthesize`;
+// 新增：将 OpenAI 的音色名称映射到 Google Gemini 的音色名称
+const voiceMap = {
+    'alloy': 'Kore',   // Firm
+    'echo': 'Puck',    // Upbeat
+    'fable': 'Charon', // Informative
+    'onyx': 'Fenrir',  // Excitable
+    'nova': 'Leda',    // Youthful
+    'shimmer': 'Zephyr'// Bright
+};
 
-  // 1. 将 OpenAI 请求体转换为 Google TTS API 的格式
-  //    这里我们做一个简单的映射，你可以根据需要扩展更多 voice 选项
-  const googleTtsBody = {
-    input: { text: req.input },
-    voice: {
-      // OpenAI 的 "alloy" 声音映射到 Google 的一个高质量 Wavenet 声音
-      // 你可以根据 OpenAI 的 voice 名称添加更多映射关系
-      languageCode: 'en-US',
-      name: 'en-US-Wavenet-D' 
-    },
-    audioConfig: {
-      // OpenAI 默认是 mp3, Google TTS API 也支持
-      audioEncoding: 'MP3'
-    }
-  };
-
-  // 2. 发送请求到 Google Cloud TTS API
-  const response = await fetch(GOOGLE_TTS_URL, {
-    method: "POST",
-    headers: {
-      // Google TTS API 使用 x-goog-api-key 作为认证头
-      "x-goog-api-key": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(googleTtsBody),
-  });
-
-  // 3. 处理响应
-  if (!response.ok) {
-    // 如果 Google API 返回错误，将其内容直接转发给客户端，方便调试
-    const errorBody = await response.text();
-    console.error("Google TTS API Error:", errorBody);
-    throw new HttpError(`Google TTS API request failed: ${errorBody}`, response.status);
-  }
-
-  // 4. 将 Google 返回的音频数据回传
-  // Google TTS API 的成功响应是一个 JSON，其中 audioContent 字段是 Base64 编码的音频数据
-  const responseData = await response.json();
-  
-  // 将 Base64 数据解码成二进制的音频文件
-  const audioBuffer = Buffer.from(responseData.audioContent, 'base64');
-
-  // 创建一个新的 Response 对象，设置正确的音频文件类型头，并返回
-  const headers = new Headers();
-  headers.set("Content-Type", "audio/mpeg");
-  headers.set("Access-Control-Allow-Origin", "*");
-
-  return new Response(audioBuffer, { headers });
+// 新增：将 Google API 返回的 PCM 裸音频数据转换为可播放的 WAV 格式
+// 解释：Google API 返回的是无法直接播放的原始音频流 (PCM)。
+// 这个函数为其添加一个 WAV 文件头，使其成为一个标准的、可播放的音频文件，
+// 这样您的 Python 客户端才能正确地将它保存为文件。
+function pcmToWav(pcmData, sampleRate) {
+    const numChannels = 1, bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const wavHeader = new ArrayBuffer(44);
+    const view = new DataView(wavHeader);
+    view.setUint32(0, 0x52494646, false); // "RIFF"
+    view.setUint32(4, 36 + pcmData.length, true); // 文件大小
+    view.setUint32(8, 0x57415645, false); // "WAVE"
+    view.setUint32(12, 0x666d7420, false); // "fmt "
+    view.setUint32(16, 16, true); // 子块大小 (16 for PCM)
+    view.setUint16(20, 1, true); // 音频格式 (1 for PCM)
+    view.setUint16(22, numChannels, true); //声道数
+    view.setUint32(24, sampleRate, true); // 采样率
+    view.setUint32(28, byteRate, true); // 字节率
+    view.setUint16(32, blockAlign, true); // 块对齐
+    view.setUint16(34, bitsPerSample, true); // 位深度
+    view.setUint32(36, 0x64617461, false); // "data"
+    view.setUint32(40, pcmData.length, true); // 数据大小
+    const wavHeaderBuffer = Buffer.from(wavHeader);
+    return Buffer.concat([wavHeaderBuffer, pcmData]);
 }
-// --- 新增代码块结束 ---
+
+// 新增：处理 TTS 请求的核心函数
+async function handleAudioSpeech(req, apiKey) {
+    const model = "gemini-2.5-flash-preview-tts";
+    const geminiVoice = voiceMap[req.voice] || 'Kore';
+
+    const response = await fetch(`${BASE_URL}/${API_VERSION}/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: makeHeaders(apiKey, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            contents: [{ parts: [{ text: req.input }] }],
+            generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: geminiVoice } } }
+            },
+            model: model
+        }),
+    });
+
+    if (!response.ok) {
+        return new Response(await response.text(), fixCors(response));
+    }
+
+    const result = await response.json();
+    const part = result.candidates[0].content.parts[0];
+    const sampleRate = parseInt(part.inlineData.mimeType.match(/rate=(\d+)/)[1], 10);
+    const pcmData = Buffer.from(part.inlineData.data, 'base64');
+    const wavData = pcmToWav(pcmData, sampleRate);
+    
+    const audioResponse = new Response(wavData, fixCors(response));
+    audioResponse.headers.set('Content-Type', 'audio/mpeg');
+    return audioResponse;
+}
+
+// --- 复制到这里结束 ---
